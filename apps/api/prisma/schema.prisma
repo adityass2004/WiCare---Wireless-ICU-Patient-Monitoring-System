@@ -1,0 +1,111 @@
+datasource db {
+  provider = "mysql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+model Patient {
+  id        String   @id @db.VarChar(64)
+  name      String   @db.VarChar(255)
+  age       Int
+  gender    String   @db.VarChar(32)
+  ward      String   @db.VarChar(64)
+  bedId     String   @db.VarChar(64)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  devices   Device[]
+  readings  Reading[]
+}
+
+model Device {
+  id        String   @id @db.VarChar(64)
+  ward      String   @db.VarChar(64)
+  bedId     String   @db.VarChar(64)
+  patientId String   @db.VarChar(64)
+  patient   Patient  @relation(fields: [patientId], references: [id], onDelete: Cascade)
+  status    String   @default("offline") @db.VarChar(32)
+  lastSeen  DateTime?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  readings          Reading[]
+  connectionEvents  ConnectionEvent[]
+}
+
+model Reading {
+  id          String   @id @default(uuid()) @db.VarChar(64)
+  deviceId    String   @db.VarChar(64)
+  device      Device   @relation(fields: [deviceId], references: [id], onDelete: Cascade)
+  patientId   String   @db.VarChar(64)
+  patient     Patient  @relation(fields: [patientId], references: [id], onDelete: Cascade)
+  seq         Int
+  timestamp   DateTime
+  vitalsJson  String   @db.Text
+  qos         Int      @default(0)
+  createdAt   DateTime @default(now())
+
+  @@index([deviceId, timestamp])
+  @@index([patientId, timestamp])
+}
+
+model ConnectionEvent {
+  id        String   @id @default(uuid()) @db.VarChar(64)
+  deviceId  String   @db.VarChar(64)
+  device    Device   @relation(fields: [deviceId], references: [id], onDelete: Cascade)
+  status    String   @db.VarChar(32)
+  timestamp DateTime @default(now())
+
+  @@index([deviceId, timestamp])
+}
+
+model AlertThreshold {
+  id          String   @id @default(uuid()) @db.VarChar(64)
+  measurement String   @unique @db.VarChar(64)
+  minWarning  Float?
+  maxWarning  Float?
+  minCritical Float?
+  maxCritical Float?
+  unit        String   @db.VarChar(32)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
+
+model Alert {
+  id             String    @id @default(uuid()) @db.VarChar(64)
+  patientId      String    @db.VarChar(64)
+  bedId          String    @db.VarChar(64)
+  ward           String    @db.VarChar(64)
+  deviceId       String    @db.VarChar(64)
+  timestamp      DateTime
+  measurement    String    @db.VarChar(64)
+  value          Float?
+  threshold      String?   @db.VarChar(128)
+  severity       String    @db.VarChar(32)
+  type           String    @db.VarChar(32)
+  status         String    @default("OPEN") @db.VarChar(32)
+  reason         String    @db.Text
+  acknowledgedBy String?   @db.VarChar(64)
+  acknowledgedAt DateTime?
+  resolvedBy     String?   @db.VarChar(64)
+  resolvedAt     DateTime?
+  lastSeenAt     DateTime  @default(now())
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  @@index([patientId, status])
+  @@index([status, severity])
+}
+
+model User {
+  id        String   @id @default(uuid()) @db.VarChar(64)
+  email     String   @unique @db.VarChar(191)
+  password  String   @db.VarChar(255)
+  name      String   @db.VarChar(255)
+  role      String   @default("viewer") @db.VarChar(32) // "admin" | "clinician" | "viewer"
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
