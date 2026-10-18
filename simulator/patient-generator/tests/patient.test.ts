@@ -1,10 +1,11 @@
 import { describe, it, expect } from 'vitest';
 import { SeededRNG } from '../src/rng.js';
 import { ecgSample } from '../src/ecg.js';
-import { VITAL_CONFIGS, SLOW_VITALS } from '../src/vital-configs.js';
+import { VITAL_CONFIGS } from '../src/vital-configs.js';
 import { VirtualPatient } from '../src/patient.js';
 import { SimulationManager } from '../src/manager.js';
-import type { PatientIdentity, VitalType } from '@wicare/shared';
+import { FixedRateStrategy, AdaptiveRiskNetworkStrategy } from '../src/transmission-strategy.js';
+import type { PatientIdentity } from '@wicare/shared';
 
 function makeIdentity(n: number): PatientIdentity {
   const id = `P-${String(n).padStart(3, '0')}`;
@@ -245,5 +246,75 @@ describe('clock & speed', () => {
     expect(mgr.speed).toBe(1);
     mgr.setSpeed(5);
     expect(mgr.speed).toBe(5);
+  });
+});
+
+describe('transmission strategy & dispatch tracking', () => {
+  it('tracks messagesDispatched correctly when publish interval elapses', () => {
+    const p = new VirtualPatient(makeIdentity(1), { seed: 100 });
+    p.start();
+    expect(p.messagesDispatched).toBe(0);
+
+    // 9 ticks of 100ms = 900ms (accumulator < 1000ms target)
+    for (let i = 0; i < 9; i++) p.tick(100);
+    expect(p.messagesDispatched).toBe(0);
+
+    // 10th tick = 1000ms -> triggers publishMessage
+    p.tick(100);
+    expect(p.messagesDispatched).toBe(1);
+
+    // 10 more ticks = 2000ms -> triggers 2nd publishMessage
+    for (let i = 0; i < 10; i++) p.tick(100);
+    expect(p.messagesDispatched).toBe(2);
+  });
+
+  it('FixedRateStrategy returns constant base interval', () => {
+    const strat = new FixedRateStrategy();
+    expect(strat.calculateInterval({
+      scenario: 'stable',
+      latestReadings: [],
+      measuredLossRate: 0,
+      baseIntervalMs: 1000,
+    })).toBe(1000);
+
+    expect(strat.calculateInterval({
+      scenario: 'falling_spo2',
+      latestReadings: [],
+      measuredLossRate: 0.3,
+      baseIntervalMs: 1000,
+    })).toBe(1000);
+  });
+
+  it('AdaptiveRiskNetworkStrategy accelerates on clinical deterioration and backs off on congestion', () => {
+    const strat = new AdaptiveRiskNetworkStrategy();
+    const now = new Date().toISOString();
+
+    // Normal stable condition with 0 loss -> base interval
+    const normalInterval = strat.calculateInterval({
+      scenario: 'stable',
+      latestReadings: [{ type: 'spo2', value: 98, unit: '%', quality: 'ok', deviceId: 'DEV-001', sequence: 0, timestamp: now }],
+      measuredLossRate: 0,
+      baseIntervalMs: 1000,
+    });
+    expect(normalInterval).toBe(1000);
+
+    // Acute deterioration (falling_spo2) -> accelerates to 300ms
+    const acuteInterval = strat.calculateInterval({
+      scenario: 'falling_spo2',
+      latestReadings: [{ type: 'spo2', value: 85, unit: '%', quality: 'ok', deviceId: 'DEV-001', sequence: 1, timestamp: now }],
+      measuredLossRate: 0,
+      baseIntervalMs: 1000,
+    });
+    expect(acuteInterval).toBe(300);
+
+    // Congestion (loss > 15%) causes backoff
+    const congestedInterval = strat.calculateInterval({
+      scenario: 'stable',
+      latestReadings: [{ type: 'spo2', value: 98, unit: '%', quality: 'ok', deviceId: 'DEV-001', sequence: 2, timestamp: now }],
+      measuredLossRate: 0.25, // 25% loss
+      baseIntervalMs: 1000,
+    });
+    // multiplier = 1.0 + (0.25 - 0.15) * 3 = 1.30 -> 1300ms
+    expect(congestedInterval).toBe(1300);
   });
 });

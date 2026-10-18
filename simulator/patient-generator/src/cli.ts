@@ -274,7 +274,11 @@ async function main() {
 
   const shutdown = async () => {
     if (process.stdin.isTTY) {
-      try { process.stdin.setRawMode(false); } catch {}
+      try {
+        process.stdin.setRawMode(false);
+      } catch {
+        // ignore stdin errors on shutdown
+      }
     }
     manager.stop();
     if (args.mqtt) {

@@ -5,6 +5,8 @@ import { requireRoles } from '../auth.js';
 
 import type { DeviceRegistry } from '../mqtt/device-registry.js';
 
+import type { Prisma } from '@prisma/client';
+
 export async function registerAlertRoutes(
   app: FastifyInstance,
   alertEngine: AlertEngine,
@@ -16,7 +18,7 @@ export async function registerAlertRoutes(
     const { status, severity, patientId, limit, all } = request.query;
     const take = limit ? parseInt(limit, 10) : 50;
 
-    const where: any = {};
+    const where: Prisma.AlertWhereInput = {};
     if (status) where.status = status;
     if (severity) where.severity = severity;
     if (patientId) where.patientId = patientId;

@@ -1,4 +1,8 @@
-import { SimulationManager } from '@wicare/patient-generator';
+import {
+  SimulationManager,
+  FixedRateStrategy,
+  AdaptiveRiskNetworkStrategy,
+} from '@wicare/patient-generator';
 import { getIndianPatientProfile, type ScenarioType, type VitalType } from '@wicare/shared';
 import type { NetworkEmulatorConfig } from '@wicare/network-emulator';
 import type { Logger } from 'pino';
@@ -12,6 +16,7 @@ export interface SimulationConfig {
   fixedDelayMs: number;
   jitterMs: number;
   brokerUrl: string;
+  strategy?: 'fixed' | 'adaptive';
 }
 
 export class SimulationService {
@@ -31,6 +36,7 @@ export class SimulationService {
       fixedDelayMs: initialConfig.fixedDelayMs ?? 0,
       jitterMs: initialConfig.jitterMs ?? 0,
       brokerUrl: initialConfig.brokerUrl ?? (process.env.MQTT_URL || 'mqtt://localhost:1883'),
+      strategy: initialConfig.strategy ?? 'fixed',
     };
 
     this.manager = new SimulationManager({
@@ -193,6 +199,9 @@ export class SimulationService {
       }
     }
 
+    const strategyInstance =
+      cfg.strategy === 'adaptive' ? new AdaptiveRiskNetworkStrategy() : new FixedRateStrategy();
+
     for (const p of this.manager.listPatients()) {
       if (p.isMqttConnected) {
         await p.disconnectMqtt();
@@ -202,6 +211,7 @@ export class SimulationService {
           brokerUrl: cfg.brokerUrl,
           qos: cfg.qos,
           publishIntervalMs: cfg.publishIntervalMs,
+          strategy: strategyInstance,
           networkConfig,
         })
         .catch((err) => {

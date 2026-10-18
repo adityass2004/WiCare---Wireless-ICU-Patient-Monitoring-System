@@ -243,6 +243,10 @@ export class VirtualPatient {
     return this.offlineBuffer.length;
   }
 
+  get messagesDispatched(): number {
+    return this.messageSeq;
+  }
+
   setStrategy(strategy: TransmissionStrategy): void {
     this.strategy = strategy;
   }
@@ -427,7 +431,7 @@ export class VirtualPatient {
     const noise = this.rng.gaussian(0, cfg.noiseStd);
     let value = cfg.baseline + scenarioDelta + state.walk + noise;
 
-    let quality: VitalQuality = effect.quality;
+    const quality: VitalQuality = effect.quality;
     if (quality === 'noise') {
       value += this.rng.gaussian(0, cfg.noiseStd * 6);
     } else if (quality === 'flatline') {
@@ -459,7 +463,7 @@ export class VirtualPatient {
     let value = ecgSample(this.ecgPhase) * effect.ecgMultiplier;
     value += this.rng.gaussian(0, cfg.noiseStd);
 
-    let quality: VitalQuality = effect.quality;
+    const quality: VitalQuality = effect.quality;
     if (quality === 'flatline' || quality === 'missing') {
       value = 0;
     } else if (quality === 'noise') {

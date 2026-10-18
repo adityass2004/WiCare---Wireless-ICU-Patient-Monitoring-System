@@ -64,10 +64,11 @@ export class AiEngineClient {
 
       const data = (await response.json()) as AiScoreResponse;
       return data;
-    } catch (err: any) {
+    } catch (err: unknown) {
       // Graceful fallback: catch offline/connection errors silently and log warning
+      const message = err instanceof Error ? err.message : String(err);
       this.logger.warn(
-        { err: err.message, patientId },
+        { err: message, patientId },
         'AI engine service offline or unreachable; continuing cleanly with Phase 4 rule-based alerts',
       );
       return null;

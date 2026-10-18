@@ -1,4 +1,4 @@
-import { PrismaClient } from '@prisma/client';
+import type { PrismaClient } from '@prisma/client';
 import type { VitalsMessage } from '@wicare/shared';
 import type { SocketServer } from '../ws/socket-server';
 
@@ -105,9 +105,9 @@ export class AlertEngine {
         measurement: a.measurement,
         value: a.value,
         threshold: a.threshold,
-        severity: a.severity as any,
-        type: a.type as any,
-        status: a.status as any,
+        severity: a.severity as ActiveAlert['severity'],
+        type: a.type as ActiveAlert['type'],
+        status: a.status as ActiveAlert['status'],
         reason: a.reason,
         acknowledgedBy: a.acknowledgedBy,
         acknowledgedAt: a.acknowledgedAt?.toISOString(),
@@ -444,8 +444,8 @@ export class AlertEngine {
       measurement: dbAlert.measurement,
       value: dbAlert.value,
       threshold: dbAlert.threshold,
-      severity: dbAlert.severity as any,
-      type: dbAlert.type as any,
+      severity: dbAlert.severity as ActiveAlert['severity'],
+      type: dbAlert.type as ActiveAlert['type'],
       status: 'OPEN',
       reason: dbAlert.reason,
       lastSeenAt: dbAlert.lastSeenAt.toISOString(),
@@ -480,8 +480,8 @@ export class AlertEngine {
       measurement: dbAlert.measurement,
       value: dbAlert.value,
       threshold: dbAlert.threshold,
-      severity: dbAlert.severity as any,
-      type: dbAlert.type as any,
+      severity: dbAlert.severity as ActiveAlert['severity'],
+      type: dbAlert.type as ActiveAlert['type'],
       status: 'ACKNOWLEDGED',
       reason: dbAlert.reason,
       acknowledgedBy: dbAlert.acknowledgedBy,
@@ -525,8 +525,8 @@ export class AlertEngine {
       measurement: dbAlert.measurement,
       value: dbAlert.value,
       threshold: dbAlert.threshold,
-      severity: dbAlert.severity as any,
-      type: dbAlert.type as any,
+      severity: dbAlert.severity as ActiveAlert['severity'],
+      type: dbAlert.type as ActiveAlert['type'],
       status: 'RESOLVED',
       reason: dbAlert.reason,
       acknowledgedBy: dbAlert.acknowledgedBy,

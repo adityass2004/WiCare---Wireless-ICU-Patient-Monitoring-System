@@ -27,6 +27,12 @@ export interface SubscriberOptions {
   alertEngine?: AlertEngine;
   dropRecorder?: MqttDropRecorder;
   logger: Logger;
+  onMessageReceived?: (
+    message: VitalsMessage,
+    topicKind: 'vitals' | 'vitals_critical',
+    receivedAt: number,
+    transportLatencyMs: number,
+  ) => void;
 }
 
 export class MqttSubscriber {
@@ -124,6 +130,19 @@ export class MqttSubscriber {
           'Device ID mismatch between topic and payload',
         );
         return;
+      }
+
+      const receivedAt = Date.now();
+      const sentAt = new Date(message.timestamp).getTime();
+      const transportLatencyMs = isNaN(sentAt) ? 0 : Math.max(0, receivedAt - sentAt);
+
+      if (this.opts.onMessageReceived) {
+        this.opts.onMessageReceived(
+          message,
+          parsed.kind as 'vitals' | 'vitals_critical',
+          receivedAt,
+          transportLatencyMs,
+        );
       }
 
       const devStateBefore = this.registry.get(message.deviceId);

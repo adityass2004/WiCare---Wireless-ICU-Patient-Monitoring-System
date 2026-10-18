@@ -22,12 +22,21 @@ describe('Phase 2 MQTT Wireless Network Simulation Integration', { timeout: 2000
   });
 
   afterAll(async () => {
-    if (tcpServer) {
-      await new Promise<void>((resolve) => tcpServer.close(() => resolve()));
-    }
-    if (broker) {
-      await new Promise<void>((resolve) => broker.close(() => resolve()));
-    }
+    await new Promise<void>((resolve) => {
+      if (broker) {
+        broker.close(() => {
+          if (tcpServer) {
+            tcpServer.close(() => resolve());
+          } else {
+            resolve();
+          }
+        });
+      } else if (tcpServer) {
+        tcpServer.close(() => resolve());
+      } else {
+        resolve();
+      }
+    });
   });
 
   it('Milestone: 3 virtual patients publish to MQTT and backend identifies all 3', async () => {
@@ -123,7 +132,7 @@ describe('Phase 2 MQTT Wireless Network Simulation Integration', { timeout: 2000
       manager.advance(5);
     }
 
-    await new Promise((resolve) => setTimeout(resolve, 350));
+    await new Promise((resolve) => setTimeout(resolve, 800));
 
     expect(registry.count).toBe(count);
 

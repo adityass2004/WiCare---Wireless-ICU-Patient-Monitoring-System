@@ -42,14 +42,14 @@ export class WsServer {
       if (token && typeof token === 'string') {
         const user = verifyToken(token);
         if (user) {
-          (socket as any).user = user;
+          socket.data.user = user;
         }
       }
       next();
     });
 
     this.io.on('connection', (socket) => {
-      const user = (socket as any).user;
+      const user = socket.data.user as { email?: string } | undefined;
       this.logger.info({ socketId: socket.id, user: user?.email || 'anonymous' }, 'Web client connected via Socket.IO');
 
       socket.on('subscribe:ward', (ward: string) => {
@@ -107,7 +107,7 @@ export class WsServer {
     this.io.to('all').emit('recorder:status', { active: !!(session && session.isActive), session });
   }
 
-  emitAlertNew(alert: any, ward?: string): void {
+  emitAlertNew(alert: unknown, ward?: string): void {
     if (!this.io) return;
     if (ward) {
       this.io.to(`ward:${ward}`).to('all').emit('alert:new', alert);
@@ -116,7 +116,7 @@ export class WsServer {
     }
   }
 
-  emitAlertUpdated(alert: any, ward?: string): void {
+  emitAlertUpdated(alert: unknown, ward?: string): void {
     if (!this.io) return;
     if (ward) {
       this.io.to(`ward:${ward}`).to('all').emit('alert:updated', alert);
@@ -125,7 +125,7 @@ export class WsServer {
     }
   }
 
-  emitAlertResolved(alert: any, ward?: string): void {
+  emitAlertResolved(alert: unknown, ward?: string): void {
     if (!this.io) return;
     if (ward) {
       this.io.to(`ward:${ward}`).to('all').emit('alert:resolved', alert);

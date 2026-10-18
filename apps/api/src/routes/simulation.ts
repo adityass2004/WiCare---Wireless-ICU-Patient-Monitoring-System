@@ -1,5 +1,5 @@
 import type { FastifyInstance } from 'fastify';
-import type { SimulationService } from '../simulation/simulation-service.js';
+import type { SimulationService, SimulationConfig } from '../simulation/simulation-service.js';
 import type { ScenarioType, VitalType } from '@wicare/shared';
 import type { DeviceRegistry } from '../mqtt/device-registry.js';
 import type { WsServer } from '../ws/socket-server.js';
@@ -22,11 +22,11 @@ const defaultSimConfig = {
   brokerUrl: 'mqtt://localhost:1883',
 };
 
-async function callSimulator<T = any>(
+async function callSimulator<T = unknown>(
   simulatorUrl: string,
   path: string,
   method = 'GET',
-  body?: any,
+  body?: unknown,
 ): Promise<{ ok: boolean; status: number; data: T }> {
   try {
     const controller = new AbortController();
@@ -44,14 +44,14 @@ async function callSimulator<T = any>(
     clearTimeout(timeoutId);
     const data = await res.json().catch(() => ({}));
     return { ok: res.ok, status: res.status, data: data as T };
-  } catch (err: any) {
+  } catch {
     return {
       ok: false,
       status: 503,
       data: {
         error: 'Simulator service is offline',
         message: 'The standalone simulator is not running. Start it in a separate terminal with: npm run simulator',
-      } as any,
+      } as T,
     };
   }
 }
@@ -98,7 +98,7 @@ export async function registerSimulationRoutes(
         status: string;
         running: boolean;
         config: typeof defaultSimConfig;
-        patients: any[];
+        patients: Array<Record<string, unknown>>;
       }>(simulatorUrl, '/status');
 
       if (res.ok) {
@@ -146,14 +146,14 @@ export async function registerSimulationRoutes(
 
   // POST /simulation/stop
   app.post('/simulation/stop', async (_request, reply) => {
-    let resultConfig: any = defaultSimConfig;
+    let resultConfig: SimulationConfig | Record<string, unknown> = defaultSimConfig;
 
     if (simulationService) {
       resultConfig = await simulationService.stopSimulation();
     } else if (simulatorUrl) {
-      const res = await callSimulator(simulatorUrl, '/stop', 'POST');
+      const res = await callSimulator<{ config?: Record<string, unknown> }>(simulatorUrl, '/stop', 'POST');
       if (res.ok) {
-        resultConfig = (res.data as any).config || defaultSimConfig;
+        resultConfig = res.data.config || defaultSimConfig;
       } else {
         reply.code(res.status);
         return res.data;
@@ -201,17 +201,17 @@ export async function registerSimulationRoutes(
 
   // POST /simulation/remove-bed
   app.post('/simulation/remove-bed', async (_request, reply) => {
-    let resultConfig: any;
-    let patients: any[] = [];
+    let resultConfig: { count: number } | undefined;
+    let patients: unknown[] = [];
 
     if (simulationService) {
       resultConfig = await simulationService.removeBed();
       patients = simulationService.listPatients();
     } else if (simulatorUrl) {
-      const res = await callSimulator(simulatorUrl, '/remove-bed', 'POST');
+      const res = await callSimulator<{ config?: { count: number }; patients?: unknown[] }>(simulatorUrl, '/remove-bed', 'POST');
       if (res.ok) {
-        resultConfig = (res.data as any).config;
-        patients = (res.data as any).patients || [];
+        resultConfig = res.data.config;
+        patients = res.data.patients || [];
       } else {
         reply.code(res.status);
         return res.data;

@@ -17,6 +17,7 @@ export interface DeviceState {
 
 export class DeviceRegistry {
   private readonly devices = new Map<string, DeviceState>();
+  private readonly receivedSeqs = new Map<string, Set<number>>();
 
   private ensure(message: VitalsMessage): DeviceState {
     let state = this.devices.get(message.deviceId);
@@ -36,6 +37,7 @@ export class DeviceRegistry {
         lastQos: message.qos ?? null,
       };
       this.devices.set(message.deviceId, state);
+      this.receivedSeqs.set(message.deviceId, new Set<number>());
     }
     return state;
   }
@@ -45,25 +47,36 @@ export class DeviceRegistry {
     state.lastSeen = message.timestamp;
     state.online = true;
     state.lastQos = message.qos ?? state.lastQos;
+
+    const seqSet = this.receivedSeqs.get(message.deviceId) ?? new Set<number>();
+    this.receivedSeqs.set(message.deviceId, seqSet);
+
+    // If duplicate packet, update lastSeen but do not double count
+    if (seqSet.has(message.seq)) {
+      return;
+    }
+
+    seqSet.add(message.seq);
     state.totalReceived++;
 
     if (state.firstSeq === null) {
       state.firstSeq = message.seq;
       state.lastSeq = message.seq;
+      state.totalGaps = 0;
       return;
     }
 
     if (message.seq > state.lastSeq!) {
-      const gap = message.seq - state.lastSeq! - 1;
-      if (gap > 0) {
+      const jump = message.seq - state.lastSeq! - 1;
+      if (jump > 0) {
         state.gapCount++;
-        state.totalGaps += gap;
       }
       state.lastSeq = message.seq;
-    } else if (message.seq < state.lastSeq!) {
-      state.gapCount++;
-      state.totalGaps += 1;
     }
+
+    // Expected sequence range spans from firstSeq to maxSeq
+    const expected = state.lastSeq! - state.firstSeq + 1;
+    state.totalGaps = Math.max(0, expected - seqSet.size);
   }
 
   setStatus(deviceId: string, status: DeviceStatus): void {

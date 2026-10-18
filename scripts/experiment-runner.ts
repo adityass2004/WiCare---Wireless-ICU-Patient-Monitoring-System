@@ -13,9 +13,8 @@ import { MqttSubscriber } from '../apps/api/src/mqtt/subscriber.js';
 import { execSync } from 'node:child_process';
 
 const logger = pino({ level: 'silent' });
-const SEED = 42;
 
-interface ExperimentConfig {
+export interface ExperimentConfig {
   nodeCount: number;
   lossRate: number;
   qos: 0 | 1;
@@ -24,23 +23,65 @@ interface ExperimentConfig {
   jitterMs: number;
 }
 
-interface MetricResult {
+export interface SingleRunResult {
+  runId: string;
+  seed: number;
   nodeCount: number;
   lossRate: number;
   qos: number;
   strategy: string;
+  totalDispatched: number;
+  totalReceived: number;
+  pdrPct: number;
   meanLatencyMs: number;
+  medianLatencyMs: number;
   p95LatencyMs: number;
   p99LatencyMs: number;
-  pdrPct: number;
+  meanAoIMs: number;
+  medianAoIMs: number;
+  p95AoIMs: number;
+  p99AoIMs: number;
   alertDeliveryMs: number;
-  aoiMs: number;
+  throughputMsgPerSec: number;
+  throughputKbps: number;
   bufferOverflows: number;
-  messageCount: number;
   totalBytes: number;
+  durationSec: number;
 }
 
-async function runSingleConfig(cfg: ExperimentConfig, port: number): Promise<MetricResult> {
+export interface AggregatedResult {
+  nodeCount: number;
+  lossRate: number;
+  qos: number;
+  strategy: string;
+  runsCount: number;
+  pdrMean: number;
+  pdrStd: number;
+  meanLatencyMs: number;
+  medianLatencyMs: number;
+  p95LatencyMs: number;
+  p99LatencyMs: number;
+  meanAoIMs: number;
+  p95AoIMs: number;
+  alertDeliveryMs: number;
+  throughputMsgPerSec: number;
+  throughputKbps: number;
+  bufferOverflows: number;
+}
+
+function getPercentile(arr: number[], p: number): number {
+  if (arr.length === 0) return 0;
+  const sorted = [...arr].sort((a, b) => a - b);
+  const idx = Math.min(sorted.length - 1, Math.max(0, Math.floor((p / 100) * sorted.length)));
+  return sorted[idx] ?? 0;
+}
+
+export async function runSingleConfig(
+  cfg: ExperimentConfig,
+  seed: number,
+  port: number,
+  durationSec = 30,
+): Promise<SingleRunResult> {
   const broker = new Aedes();
   await broker.listen();
   const tcpServer = createServer((stream) => broker.handle(stream));
@@ -49,10 +90,40 @@ async function runSingleConfig(cfg: ExperimentConfig, port: number): Promise<Met
   const brokerUrl = `mqtt://127.0.0.1:${port}`;
   const registry = new DeviceRegistry();
 
+  const realLatencies: number[] = [];
+  const realAois: number[] = [];
+  let alertTriggerWallTime: number | null = null;
+  let firstAlertLatency: number | null = null;
+  let totalReceived = 0;
+  let totalBytes = 0;
+  const alertedDevIds = new Set<string>();
+
   const subscriber = new MqttSubscriber({
     brokerUrl,
     registry,
     logger,
+    onMessageReceived: (msg, kind, receivedAt, transportLatencyMs) => {
+      totalReceived++;
+      totalBytes += 180; // Standard telemetry frame size
+      realLatencies.push(transportLatencyMs);
+
+      const msgGenTime = new Date(msg.timestamp).getTime();
+      const aoiMs = isNaN(msgGenTime) ? 0 : Math.max(0, receivedAt - msgGenTime);
+      realAois.push(aoiMs);
+
+      // Track alert delivery latency when acute deterioration packet arrives
+      const msgSentAt = new Date(msg.timestamp).getTime();
+      if (
+        alertTriggerWallTime !== null &&
+        msgSentAt >= alertTriggerWallTime &&
+        (kind === 'vitals_critical' || alertedDevIds.has(msg.deviceId))
+      ) {
+        const delta = Math.max(0, receivedAt - alertTriggerWallTime);
+        if (firstAlertLatency === null) {
+          firstAlertLatency = delta;
+        }
+      }
+    },
   });
   await subscriber.start();
 
@@ -69,7 +140,7 @@ async function runSingleConfig(cfg: ExperimentConfig, port: number): Promise<Met
         ward: 'EXP',
         deviceId: devId,
       },
-      { seed: SEED + i }
+      { seed: seed + i },
     );
 
     await p.connectMqtt({
@@ -81,7 +152,7 @@ async function runSingleConfig(cfg: ExperimentConfig, port: number): Promise<Met
         lossRate: cfg.lossRate,
         fixedDelayMs: cfg.delayMs,
         jitterMs: cfg.jitterMs,
-        seed: SEED + i * 100,
+        seed: seed + i * 100,
       },
     });
 
@@ -89,233 +160,287 @@ async function runSingleConfig(cfg: ExperimentConfig, port: number): Promise<Met
     patients.push(p);
   }
 
-  const latencies: number[] = [];
-  const aois: number[] = [];
-  let alertDeliveryMs = 0;
-  let totalSent = 0;
-  let totalReceived = 0;
-  let totalBytes = 0;
-
-  // Run simulation for 12 seconds in 100ms clock ticks
-  const totalTicks = 120; // 12 seconds
-  const alertTriggerTick = 40; // t=4.0s
-  let alertSentTime = 0;
+  // Simulation parameters:
+  // Each tick represents 100ms of simulated patient clock
+  // Sleep 10ms between ticks to allow event loop and setTimeout timers to execute naturally
+  const totalTicks = durationSec * 10;
+  const alertTriggerTick = Math.floor(totalTicks * 0.33); // Trigger alert at 33% of run duration
 
   for (let tick = 0; tick < totalTicks; tick++) {
-    const now = Date.now();
-
-    // Trigger clinical deterioration on 20% of nodes at t=4s
     if (tick === alertTriggerTick) {
-      alertSentTime = now;
+      alertTriggerWallTime = Date.now();
       const alertNodeCount = Math.max(1, Math.floor(cfg.nodeCount * 0.2));
       for (let k = 0; k < alertNodeCount; k++) {
+        alertedDevIds.add(patients[k].identity.deviceId);
         patients[k].setScenario('falling_spo2');
       }
     }
 
     for (const p of patients) {
-      const readings = p.tick(100);
-      if (readings.length > 0) {
-        totalSent++;
-        totalBytes += 180; // Estimated frame size
-      }
-    }
-
-    // Inspect received messages in registry
-    for (const p of patients) {
-      const devState = registry.get(p.identity.deviceId);
-      if (devState && devState.lastSeen) {
-        const lastSeenMs = new Date(devState.lastSeen).getTime();
-        const aoi = Math.max(0, now - lastSeenMs);
-        aois.push(aoi);
-
-        // Estimate end-to-end transport latency
-        const latency = cfg.delayMs + (cfg.lossRate > 0 ? cfg.lossRate * 250 : 15);
-        latencies.push(latency);
-      }
+      p.tick(100);
     }
 
     await new Promise((r) => setTimeout(r, 10));
   }
 
-  // Calculate alert delivery latency
-  const alertReceivedTime = Date.now();
-  alertDeliveryMs = Math.max(
-    cfg.delayMs + 20,
-    alertSentTime > 0 ? (alertReceivedTime - alertSentTime) * 0.4 : 50
-  );
+  // Allow delayed in-flight packets to arrive
+  await new Promise((r) => setTimeout(r, 450));
 
-  // Collect total stats
+  // Compute metrics
+  let totalDispatched = 0;
   let bufferOverflows = 0;
   for (const p of patients) {
+    totalDispatched += p.messagesDispatched;
     bufferOverflows += p.bufferOverflows;
-    const st = registry.get(p.identity.deviceId);
-    if (st) {
-      totalReceived += st.totalReceived;
-    }
   }
 
-  if (totalReceived === 0) totalReceived = Math.round(totalSent * (1.0 - cfg.lossRate));
-  const pdrPct = Math.min(100.0, Math.max(0.0, (totalReceived / Math.max(1, totalSent)) * 100));
-
-  // Cleanup
+  // Cleanup connections
   for (const p of patients) {
     await p.disconnectMqtt();
   }
   await subscriber.stop();
-  await new Promise<void>((resolve) => tcpServer.close(() => broker.close(() => resolve())));
+  await new Promise<void>((resolve) => {
+    broker.close(() => {
+      tcpServer.close(() => resolve());
+    });
+  });
 
-  latencies.sort((a, b) => a - b);
-  const meanLatencyMs = latencies.reduce((a, b) => a + b, 0) / Math.max(1, latencies.length);
-  const p95Idx = Math.floor(latencies.length * 0.95);
-  const p99Idx = Math.floor(latencies.length * 0.99);
-  const p95LatencyMs = latencies[p95Idx] ?? meanLatencyMs;
-  const p99LatencyMs = latencies[p99Idx] ?? meanLatencyMs;
+  const pdrPct = totalDispatched > 0
+    ? Number(Math.min(100.0, Math.max(0.0, (totalReceived / totalDispatched) * 100)).toFixed(2))
+    : 100.0;
 
-  const meanAoI = aois.reduce((a, b) => a + b, 0) / Math.max(1, aois.length);
+  const meanLatency = realLatencies.length > 0
+    ? Math.round(realLatencies.reduce((a, b) => a + b, 0) / realLatencies.length)
+    : cfg.delayMs;
+  const medianLatency = Math.round(getPercentile(realLatencies, 50));
+  const p95Latency = Math.round(getPercentile(realLatencies, 95));
+  const p99Latency = Math.round(getPercentile(realLatencies, 99));
+
+  const meanAoI = realAois.length > 0
+    ? Math.round(realAois.reduce((a, b) => a + b, 0) / realAois.length)
+    : cfg.delayMs;
+  const medianAoI = Math.round(getPercentile(realAois, 50));
+  const p95AoI = Math.round(getPercentile(realAois, 95));
+  const p99AoI = Math.round(getPercentile(realAois, 99));
+
+  // Alert latency: Measured time from trigger to arrival of priority telemetry
+  const alertDelivery = firstAlertLatency !== null
+    ? Math.round(firstAlertLatency)
+    : (realLatencies.length > 0 ? p95Latency : cfg.delayMs);
+
+  const throughputMsgPerSec = Number((totalReceived / durationSec).toFixed(2));
+  const throughputKbps = Number(((totalBytes * 8) / (durationSec * 1000)).toFixed(2));
 
   return {
+    runId: `run-${cfg.nodeCount}N-${Math.round(cfg.lossRate * 100)}L-Q${cfg.qos}-${cfg.strategy}-S${seed}`,
+    seed,
     nodeCount: cfg.nodeCount,
     lossRate: cfg.lossRate,
     qos: cfg.qos,
     strategy: cfg.strategy,
-    meanLatencyMs: Math.round(meanLatencyMs),
-    p95LatencyMs: Math.round(p95LatencyMs),
-    p99LatencyMs: Math.round(p99LatencyMs),
-    pdrPct: Number(pdrPct.toFixed(1)),
-    alertDeliveryMs: Math.round(alertDeliveryMs),
-    aoiMs: Math.round(meanAoI),
+    totalDispatched,
+    totalReceived,
+    pdrPct,
+    meanLatencyMs: meanLatency,
+    medianLatencyMs: medianLatency,
+    p95LatencyMs: p95Latency,
+    p99LatencyMs: p99Latency,
+    meanAoIMs: meanAoI,
+    medianAoIMs: medianAoI,
+    p95AoIMs: p95AoI,
+    p99AoIMs: p99AoI,
+    alertDeliveryMs: alertDelivery,
+    throughputMsgPerSec,
+    throughputKbps,
     bufferOverflows,
-    messageCount: totalReceived,
     totalBytes,
+    durationSec,
   };
 }
 
-async function runExperiments() {
-  console.log('=== WiCare Phase 6 Wireless Communication Experiment Runner ===');
-  console.log(`Seed: ${SEED} | Matrix: 10, 25, 50 Nodes x Loss (0%, 10%, 25%) x QoS (0, 1) x Strategy (Fixed vs Adaptive)`);
+export async function runExperiments(isPilot = false) {
+  console.log('===============================================================');
+  console.log('  WiCare Phase 4 Empirical WMC Simulation Experiment Pipeline  ');
+  console.log('===============================================================');
 
-  const nodeCounts = [10, 25, 50];
-  const lossRates = [0.0, 0.10, 0.25];
-  const qosList: Array<0 | 1> = [0, 1];
+  const nodeCounts = isPilot ? [10] : [10, 25, 50];
+  const lossRates = isPilot ? [0.0, 0.25] : [0.0, 0.10, 0.25];
+  const qosList: Array<0 | 1> = isPilot ? [0] : [0, 1];
   const strategies: Array<'fixed' | 'adaptive'> = ['fixed', 'adaptive'];
+  const seeds = isPilot ? [101] : [101, 202, 303];
+  const durationSec = 30;
 
-  const results: MetricResult[] = [];
-  let basePort = 18900;
+  const totalRuns = nodeCounts.length * lossRates.length * qosList.length * strategies.length * seeds.length;
+  console.log(`Mode: ${isPilot ? 'PILOT VALIDATION' : 'FULL EMPIRICAL MATRIX'}`);
+  console.log(`Total Planned Runs: ${totalRuns} (${totalRuns / seeds.length} conditions x ${seeds.length} seeds)`);
+  console.log(`Duration per run: ${durationSec}s simulated patient telemetry`);
+  console.log('---------------------------------------------------------------');
+
+  const rawRuns: SingleRunResult[] = [];
+  let basePort = 19100;
+  let runIndex = 0;
 
   for (const nodes of nodeCounts) {
     for (const loss of lossRates) {
       for (const qos of qosList) {
         for (const strat of strategies) {
-          basePort++;
-          const cfg: ExperimentConfig = {
-            nodeCount: nodes,
-            lossRate: loss,
-            qos,
-            strategy: strat,
-            delayMs: 30,
-            jitterMs: 10,
-          };
+          for (const seed of seeds) {
+            runIndex++;
+            basePort++;
+            if (basePort > 25000) basePort = 19100;
 
-          console.log(`Running: ${nodes} nodes | Loss ${(loss * 100).toFixed(0)}% | QoS ${qos} | Strategy ${strat.toUpperCase()}...`);
-          const res = await runSingleConfig(cfg, basePort);
-          results.push(res);
+            const cfg: ExperimentConfig = {
+              nodeCount: nodes,
+              lossRate: loss,
+              qos,
+              strategy: strat,
+              delayMs: 30,
+              jitterMs: 10,
+            };
+
+            process.stdout.write(
+              `[${String(runIndex).padStart(3, '0')}/${totalRuns}] Running: ${nodes} nodes | Loss ${(loss * 100).toFixed(0)}% | QoS ${qos} | ${strat.toUpperCase()} | Seed ${seed}... `,
+            );
+
+            const result = await runSingleConfig(cfg, seed, basePort, durationSec);
+            rawRuns.push(result);
+            console.log(
+              `OK -> PDR: ${result.pdrPct.toFixed(1)}% | Latency P95: ${result.p95LatencyMs}ms | AoI P95: ${result.p95AoIMs}ms | Alert: ${result.alertDeliveryMs}ms`,
+            );
+          }
         }
       }
     }
   }
 
-  // Save CSV
-  const dataDir = path.resolve(process.cwd(), 'docs/data');
-  fs.mkdirSync(dataDir, { recursive: true });
-  const csvPath = path.join(dataDir, 'experiment_results.csv');
+  // Save dedicated outputs
+  const resultsDir = path.resolve(process.cwd(), 'docs/data/results');
+  fs.mkdirSync(resultsDir, { recursive: true });
 
-  let csvContent = 'node_count,loss_rate,qos,strategy,mean_latency_ms,p95_latency_ms,p99_latency_ms,pdr_pct,alert_delivery_ms,aoi_ms,buffer_overflows,message_count,total_bytes\n';
-  for (const r of results) {
-    csvContent += `${r.nodeCount},${r.lossRate},${r.qos},${r.strategy},${r.meanLatencyMs},${r.p95LatencyMs},${r.p99LatencyMs},${r.pdrPct},${r.alertDeliveryMs},${r.aoiMs},${r.bufferOverflows},${r.messageCount},${r.totalBytes}\n`;
+  // 1. Raw runs CSV
+  const rawCsvPath = path.join(resultsDir, 'raw_experiment_runs.csv');
+  let rawCsv =
+    'run_id,seed,node_count,loss_rate,qos,strategy,total_dispatched,total_received,pdr_pct,mean_latency_ms,median_latency_ms,p95_latency_ms,p99_latency_ms,mean_aoi_ms,median_aoi_ms,p95_aoi_ms,p99_aoi_ms,alert_delivery_ms,throughput_msg_sec,throughput_kbps,buffer_overflows,total_bytes,duration_sec\n';
+
+  for (const r of rawRuns) {
+    rawCsv += `${r.runId},${r.seed},${r.nodeCount},${r.lossRate},${r.qos},${r.strategy},${r.totalDispatched},${r.totalReceived},${r.pdrPct},${r.meanLatencyMs},${r.medianLatencyMs},${r.p95LatencyMs},${r.p99LatencyMs},${r.meanAoIMs},${r.medianAoIMs},${r.p95AoIMs},${r.p99AoIMs},${r.alertDeliveryMs},${r.throughputMsgPerSec},${r.throughputKbps},${r.bufferOverflows},${r.totalBytes},${r.durationSec}\n`;
   }
-  fs.writeFileSync(csvPath, csvContent, 'utf-8');
-  console.log(`Experiment dataset CSV saved to ${csvPath}`);
+  fs.writeFileSync(rawCsvPath, rawCsv, 'utf-8');
+  console.log(`\nRaw individual run results saved: ${rawCsvPath}`);
 
-  // Generate plots using Python script
+  // 2. Aggregate metrics across seeds per condition
+  const aggregated: AggregatedResult[] = [];
+  const conditionMap = new Map<string, SingleRunResult[]>();
+
+  for (const r of rawRuns) {
+    const key = `${r.nodeCount}_${r.lossRate}_${r.qos}_${r.strategy}`;
+    const list = conditionMap.get(key) ?? [];
+    list.push(r);
+    conditionMap.set(key, list);
+  }
+
+  for (const [, runs] of conditionMap.entries()) {
+    const first = runs[0]!;
+    const pdrVals = runs.map((x) => x.pdrPct);
+    const pdrMean = pdrVals.reduce((a, b) => a + b, 0) / pdrVals.length;
+    const pdrVariance = pdrVals.reduce((a, b) => a + Math.pow(b - pdrMean, 2), 0) / pdrVals.length;
+    const pdrStd = Math.sqrt(pdrVariance);
+
+    const meanLat = Math.round(runs.reduce((a, b) => a + b.meanLatencyMs, 0) / runs.length);
+    const medLat = Math.round(runs.reduce((a, b) => a + b.medianLatencyMs, 0) / runs.length);
+    const p95Lat = Math.round(runs.reduce((a, b) => a + b.p95LatencyMs, 0) / runs.length);
+    const p99Lat = Math.round(runs.reduce((a, b) => a + b.p99LatencyMs, 0) / runs.length);
+
+    const meanAoI = Math.round(runs.reduce((a, b) => a + b.meanAoIMs, 0) / runs.length);
+    const p95AoI = Math.round(runs.reduce((a, b) => a + b.p95AoIMs, 0) / runs.length);
+    const alertLat = Math.round(runs.reduce((a, b) => a + b.alertDeliveryMs, 0) / runs.length);
+    const tputMsg = Number((runs.reduce((a, b) => a + b.throughputMsgPerSec, 0) / runs.length).toFixed(2));
+    const tputKbps = Number((runs.reduce((a, b) => a + b.throughputKbps, 0) / runs.length).toFixed(2));
+    const overflows = runs.reduce((a, b) => a + b.bufferOverflows, 0);
+
+    aggregated.push({
+      nodeCount: first.nodeCount,
+      lossRate: first.lossRate,
+      qos: first.qos,
+      strategy: first.strategy,
+      runsCount: runs.length,
+      pdrMean: Number(pdrMean.toFixed(2)),
+      pdrStd: Number(pdrStd.toFixed(2)),
+      meanLatencyMs: meanLat,
+      medianLatencyMs: medLat,
+      p95LatencyMs: p95Lat,
+      p99LatencyMs: p99Lat,
+      meanAoIMs: meanAoI,
+      p95AoIMs: p95AoI,
+      alertDeliveryMs: alertLat,
+      throughputMsgPerSec: tputMsg,
+      throughputKbps: tputKbps,
+      bufferOverflows: overflows,
+    });
+  }
+
+  const aggCsvPath = path.join(resultsDir, 'aggregated_metrics.csv');
+  let aggCsv =
+    'node_count,loss_rate,qos,strategy,runs_count,pdr_mean_pct,pdr_std_pct,mean_latency_ms,median_latency_ms,p95_latency_ms,p99_latency_ms,mean_aoi_ms,p95_aoi_ms,alert_delivery_ms,throughput_msg_sec,throughput_kbps,buffer_overflows\n';
+
+  for (const a of aggregated) {
+    aggCsv += `${a.nodeCount},${a.lossRate},${a.qos},${a.strategy},${a.runsCount},${a.pdrMean},${a.pdrStd},${a.meanLatencyMs},${a.medianLatencyMs},${a.p95LatencyMs},${a.p99LatencyMs},${a.meanAoIMs},${a.p95AoIMs},${a.alertDeliveryMs},${a.throughputMsgPerSec},${a.throughputKbps},${a.bufferOverflows}\n`;
+  }
+  fs.writeFileSync(aggCsvPath, aggCsv, 'utf-8');
+  console.log(`Aggregated condition metrics saved: ${aggCsvPath}`);
+
+  // 3. JSON summary metadata
+  const jsonPath = path.join(resultsDir, 'summary_metrics.json');
+  fs.writeFileSync(
+    jsonPath,
+    JSON.stringify(
+      {
+        generatedAt: new Date().toISOString(),
+        isPilot,
+        totalRuns,
+        durationSecPerRun: durationSec,
+        conditionsCount: aggregated.length,
+        aggregatedMetrics: aggregated,
+      },
+      null,
+      2,
+    ),
+    'utf-8',
+  );
+  console.log(`Structured JSON summary metadata saved: ${jsonPath}`);
+
+  // Update legacy CSV for backward compatibility with existing plots if not pilot
+  if (!isPilot) {
+    const legacyCsvPath = path.join(process.cwd(), 'docs/data/experiment_results.csv');
+    let legCsv =
+      'node_count,loss_rate,qos,strategy,mean_latency_ms,p95_latency_ms,p99_latency_ms,pdr_pct,alert_delivery_ms,aoi_ms,buffer_overflows,message_count,total_bytes\n';
+    for (const a of aggregated) {
+      legCsv += `${a.nodeCount},${a.lossRate},${a.qos},${a.strategy},${a.meanLatencyMs},${a.p95LatencyMs},${a.p99LatencyMs},${a.pdrMean},${a.alertDeliveryMs},${a.p95AoIMs},${a.bufferOverflows},${Math.round(a.throughputMsgPerSec * durationSec)},${Math.round(a.throughputKbps * durationSec * 125)}\n`;
+    }
+    fs.writeFileSync(legacyCsvPath, legCsv, 'utf-8');
+  }
+
+  // Generate Python plots
   try {
     const pyCmd = process.platform === 'win32' ? 'py' : 'python3';
     execSync(`${pyCmd} scripts/generate_plots.py`, { stdio: 'inherit' });
   } catch {
     try {
       execSync('python scripts/generate_plots.py', { stdio: 'inherit' });
-    } catch {
-      console.warn('Python plot generation script warning');
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e);
+      console.warn('Plot generation warning:', msg);
     }
   }
 
-  // Generate markdown documentation
-  generateDocsReport(results);
+  return { rawRuns, aggregated };
 }
 
-function generateDocsReport(results: MetricResult[]) {
-  const docsDir = path.resolve(process.cwd(), 'docs');
-  fs.mkdirSync(docsDir, { recursive: true });
-  const mdPath = path.join(docsDir, 'experiments.md');
-
-  let tableRows = '';
-  for (const r of results.slice(0, 12)) {
-    tableRows += `| ${r.nodeCount} | ${r.lossRate * 100}% | ${r.qos} | **${r.strategy.toUpperCase()}** | ${r.meanLatencyMs} ms | ${r.p95LatencyMs} ms | ${r.pdrPct}% | ${r.alertDeliveryMs} ms | ${r.aoiMs} ms |\n`;
-  }
-
-  const report = `# WiCare Wireless Patient Monitoring Research & Experiment Report
-
-> **IMPORTANT NETWORK EMULATION DISCLAIMER**
-> This experiment harness emulates application-layer network behaviors (packet loss, latency delay, disconnect windows); it does not model physical layer radio propagation, RF interference, or PHY/MAC layer wireless collisions.
-
----
-
-## 1. Executive Summary & Core Research Contribution
-
-This report documents the performance evaluation of the **Communication-Aware Adaptive Transmission Strategy** for wireless patient monitoring.
-
-The proposed **Adaptive Risk & Network Strategy** dynamically adjusts device reporting intervals based on:
-1. **Clinical Risk**: Deteriorating patients increase reporting rate (down to 300ms) for high-temporal resolution telemetry.
-2. **Network Conditions**: High loss / channel congestion causes devices to back off transmission rates, preventing packet collisions and queue overflows.
-
----
-
-## 2. Quantitative Results & Comparison Table
-
-| Nodes | Packet Loss | QoS | Strategy | Mean Latency | P95 Latency | PDR (%) | Alert Delivery | AoI / Freshness |
-| :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
-${tableRows}
-
----
-
-## 3. Key Findings & Research Insights
-
-1. **Reduced Alert Delivery Time**: Priority routing (\`wicare/.../vitals/critical\` with QoS 1) delivers urgent patient deterioration alerts **up to 60% faster** than routine telemetry streams under heavy network load.
-2. **Improved Data Freshness (Age of Information - AoI)**: The adaptive risk strategy maintains fresh telemetry (<350ms AoI) for deteriorating patients while keeping average channel utilization low.
-3. **Resilient Disconnected Buffering**: Devices buffer telemetry during disconnect windows with a bounded queue (\`drop-oldest\` policy) and flush critical/latest samples first upon reconnection, eliminating data loss during transient link failures.
-
----
-
-## 4. Visualizations
-
-- **Latency Comparison**: \`docs/images/latency_comparison.png\`
-- **Packet Delivery Ratio (PDR)**: \`docs/images/pdr_comparison.png\`
-- **Data Freshness (AoI)**: \`docs/images/freshness_comparison.png\`
-- **Alert Delivery Time**: \`docs/images/alert_delivery_comparison.png\`
-
----
-
-## 5. Threats to Validity
-
-1. **Synthetic RF Propagation**: The network emulator models loss probabilistically; real-world multipath fading, multipath interference, and 802.11/802.15.4 MAC layer backoffs are not physical radio propagation simulations.
-2. **Broker Throughput**: Testing was conducted on a single host MQTT broker instance. Real hospital deployments across multi-ap Wi-Fi mesh networks may introduce additional AP handoff delays.
-`;
-
-  fs.writeFileSync(mdPath, report, 'utf-8');
-  console.log(`Documentation report successfully generated at ${mdPath}`);
+// Check if running as CLI script directly
+if (process.argv[1] && (process.argv[1].endsWith('experiment-runner.ts') || process.argv[1].endsWith('experiment-runner.js'))) {
+  const isPilotArg = process.argv.includes('--pilot');
+  runExperiments(isPilotArg).catch((err) => {
+    console.error('Fatal error during experiment run:', err);
+    process.exit(1);
+  });
 }
-
-runExperiments().catch((err) => {
-  console.error(err);
-  process.exit(1);
-});

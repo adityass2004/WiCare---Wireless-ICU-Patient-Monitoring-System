@@ -8,7 +8,7 @@ coverage
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
-
+analysis.md
 # Environment and secrets
 .env
 .env.local

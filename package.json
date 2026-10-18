@@ -11,7 +11,7 @@
     "infrastructure/*"
   ],
   "scripts": {
-    "predev": "tsc -p packages/shared/tsconfig.json && tsc -p simulator/scenarios/tsconfig.json && tsc -p simulator/network-emulator/tsconfig.json",
+    "predev": "tsc -p packages/shared/tsconfig.json && tsc -p simulator/scenarios/tsconfig.json && tsc -p simulator/network-emulator/tsconfig.json && tsc -p simulator/patient-generator/tsconfig.json",
     "dev": "npm-run-all --parallel dev:shared dev:api dev:web",
     "dev:app": "npm-run-all --parallel dev:shared dev:api dev:web",
     "dev:all": "npm-run-all --parallel dev:shared dev:api dev:web dev:simulator",
@@ -28,7 +28,7 @@
     "simulator:cli": "tsx simulator/patient-generator/src/cli.ts",
     "sim:cli": "tsx simulator/patient-generator/src/cli.ts",
     "experiment": "tsx scripts/experiment-runner.ts",
-    "pretest": "tsc -p packages/shared/tsconfig.json && tsc -p simulator/scenarios/tsconfig.json && tsc -p simulator/network-emulator/tsconfig.json",
+    "pretest": "tsc -p packages/shared/tsconfig.json && tsc -p simulator/scenarios/tsconfig.json && tsc -p simulator/network-emulator/tsconfig.json && tsc -p simulator/patient-generator/tsconfig.json",
     "test": "vitest run",
     "test:smoke:gemini": "tsx scripts/gemini-smoke-test.ts",
     "lint": "eslint . --ext .ts,.tsx",

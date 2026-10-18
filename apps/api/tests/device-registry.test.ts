@@ -66,4 +66,38 @@ describe('DeviceRegistry sequence gap detection', () => {
     reg.setStatus('DEV-001', 'offline');
     expect(reg.get('DEV-001')!.online).toBe(false);
   });
+
+  it('handles out-of-order packets by filling gaps without inflating totalGaps', () => {
+    const reg = new DeviceRegistry();
+    reg.ingest(makeMsg('DEV-001', 0));
+    reg.ingest(makeMsg('DEV-001', 5));
+    reg.ingest(makeMsg('DEV-001', 6));
+    expect(reg.get('DEV-001')!.totalGaps).toBe(4);
+    expect(reg.get('DEV-001')!.totalReceived).toBe(3);
+
+    // Delayed packet seq 2 arrives
+    reg.ingest(makeMsg('DEV-001', 2));
+    expect(reg.get('DEV-001')!.totalGaps).toBe(3);
+    expect(reg.get('DEV-001')!.totalReceived).toBe(4);
+
+    // Delayed packet seq 1 arrives
+    reg.ingest(makeMsg('DEV-001', 1));
+    expect(reg.get('DEV-001')!.totalGaps).toBe(2);
+    expect(reg.get('DEV-001')!.totalReceived).toBe(5);
+  });
+
+  it('gracefully handles duplicate sequence numbers without double-counting', () => {
+    const reg = new DeviceRegistry();
+    reg.ingest(makeMsg('DEV-001', 0));
+    reg.ingest(makeMsg('DEV-001', 1));
+    reg.ingest(makeMsg('DEV-001', 2));
+    expect(reg.get('DEV-001')!.totalReceived).toBe(3);
+    expect(reg.get('DEV-001')!.totalGaps).toBe(0);
+
+    // Duplicate arrival of seq 1
+    reg.ingest(makeMsg('DEV-001', 1));
+    expect(reg.get('DEV-001')!.totalReceived).toBe(3);
+    expect(reg.get('DEV-001')!.totalGaps).toBe(0);
+    expect(reg.getMeasuredLossRate('DEV-001')).toBe(0);
+  });
 });

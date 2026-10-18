@@ -24,11 +24,14 @@ describe('Decoupled Simulation API Routes', () => {
       config: { count: 3, speed: 1, brokerUrl: 'mqtt://localhost:1883' },
       patients: [{ patientId: 'P-001', bedId: 'B-1' }],
     }));
-    mockSimulator.post('/start', async (req) => ({
-      success: true,
-      config: { count: (req.body as any)?.count || 5 },
-      patients: [],
-    }));
+    mockSimulator.post('/start', async (req: { body?: unknown }) => {
+      const b = req.body as { count?: number } | undefined;
+      return {
+        success: true,
+        config: { count: b?.count || 5 },
+        patients: [],
+      };
+    });
     mockSimulator.post('/add-bed', async () => ({
       success: true,
       config: { count: 4 },
