@@ -4,7 +4,7 @@ import { config } from 'dotenv';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { SimulationService, type SimulationConfig } from './simulation-service.js';
-import type { ScenarioType, VitalType } from '@wicare/shared';
+import { type ScenarioType, type VitalType, detectLanIp } from '@wicare/shared';
 
 import { getSimulatorHtml } from './ui.js';
 
@@ -190,12 +190,16 @@ async function main() {
     });
   }
 
+  const lanResult = detectLanIp();
+  const lanIp = lanResult.isLocalOnly ? 'localhost' : lanResult.primaryIp;
+
   console.log(`
 ===================================================================
   WiCare Standalone Patient Telemetry Simulator Running!
   
-  Simulator Web UI: http://localhost:${args.port}
-  Control API:      http://localhost:${args.port}/status
+  Local Access:     http://localhost:${args.port}
+  LAN Phone Access: http://${lanIp}:${args.port}
+  Control API:      http://${lanIp}:${args.port}/status
   MQTT Broker:      ${args.brokerUrl}
   Active Beds:      ${args.count}
   Status:           ${simService.isRunning ? 'Active (Publishing Telemetry)' : 'Idle'}

@@ -1,7 +1,7 @@
 import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import { prisma as defaultPrisma } from '../db/prisma.js';
 import type { DeviceRegistry } from '../mqtt/device-registry.js';
-import { requireRoles } from '../auth.js';
+import { verifyToken } from '../auth.js';
 import {
   ExplainRequestSchema,
   getIndianPatientProfile,
@@ -19,6 +19,7 @@ export interface ExplainerRoutesOptions {
   explainerService?: GeminiExplainerService;
   rateLimitWindowMs?: number;
   rateLimitMaxRequests?: number;
+  allowDemoAuth?: boolean;
 }
 
 export async function registerExplainerRoutes(
@@ -244,6 +245,50 @@ export async function registerExplainerRoutes(
     }
   };
 
+  const allowDemoAuth = options.allowDemoAuth ?? false;
+
+  const authPreHandler = async (request: FastifyRequest, reply: FastifyReply) => {
+    const authHeader = request.headers.authorization;
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      if (allowDemoAuth) {
+        request.user = {
+          id: 'demo-user',
+          email: 'demo@wicare.local',
+          name: 'Demo Clinician',
+          role: 'clinician',
+        };
+        return;
+      }
+      return reply.code(401).send({ error: 'Unauthorized', message: 'Missing or invalid Authorization header' });
+    }
+
+    const token = authHeader.substring(7);
+    const user = verifyToken(token);
+    if (!user) {
+      if (allowDemoAuth) {
+        request.user = {
+          id: 'demo-user',
+          email: 'demo@wicare.local',
+          name: 'Demo Clinician',
+          role: 'clinician',
+        };
+        return;
+      }
+      return reply.code(401).send({ error: 'Unauthorized', message: 'Invalid or expired authentication token' });
+    }
+
+    request.user = user;
+    if (!['admin', 'clinician'].includes(user.role)) {
+      if (allowDemoAuth) {
+        return;
+      }
+      return reply.code(403).send({
+        error: 'Forbidden',
+        message: `Role '${user.role}' is not authorized to access this resource. Required roles: admin, clinician`,
+      });
+    }
+  };
+
   // Register on both /api/patients/:id/explain and /patients/:id/explain
   app.post<{
     Params: { id: string };
@@ -251,7 +296,7 @@ export async function registerExplainerRoutes(
   }>(
     '/api/patients/:id/explain',
     {
-      preHandler: [requireRoles(['admin', 'clinician'])],
+      preHandler: [authPreHandler],
     },
     handler,
   );
@@ -262,7 +307,7 @@ export async function registerExplainerRoutes(
   }>(
     '/patients/:id/explain',
     {
-      preHandler: [requireRoles(['admin', 'clinician'])],
+      preHandler: [authPreHandler],
     },
     handler,
   );

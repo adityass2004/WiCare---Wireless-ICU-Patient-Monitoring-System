@@ -58,7 +58,7 @@ export const ClinicalExplainerPanel: React.FC<ClinicalExplainerPanelProps> = ({
   } | null>(null);
 
   const isViewer = userRole === 'viewer';
-  const isAuthorized = userRole === 'admin' || userRole === 'clinician';
+  const isAuthorized = !isViewer;
 
   const handleExplain = async () => {
     if (!isAuthorized || status === 'loading') return;
@@ -136,7 +136,7 @@ export const ClinicalExplainerPanel: React.FC<ClinicalExplainerPanelProps> = ({
       case 503:
         return {
           title: 'AI Service Unavailable',
-          hint: 'The Gemini Explainer is not configured on this server (server configuration is missing).',
+          hint: message || 'The AI service is temporarily busy or unconfigured. Please retry in a few moments.',
         };
       case 504:
         return {

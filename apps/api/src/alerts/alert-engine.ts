@@ -56,6 +56,7 @@ export class AlertEngine {
     private prisma: PrismaClient,
     private socketServer?: SocketServer,
     private aiClient?: AiEngineClient,
+    private enableBackgroundAi: boolean = false,
   ) {}
 
   public async init() {
@@ -72,7 +73,24 @@ export class AlertEngine {
   }
 
   public async reloadThresholds() {
-    const list = await this.prisma.alertThreshold.findMany();
+    let list = await this.prisma.alertThreshold.findMany();
+    if (list.length === 0) {
+      const defaultThresholds = [
+        { measurement: 'heart_rate', minWarning: 55, maxWarning: 100, minCritical: 45, maxCritical: 130, unit: 'bpm' },
+        { measurement: 'spo2', minWarning: 94, maxWarning: null, minCritical: 90, maxCritical: null, unit: '%' },
+        { measurement: 'temperature', minWarning: 36.0, maxWarning: 37.8, minCritical: 35.0, maxCritical: 39.0, unit: '°C' },
+        { measurement: 'respiratory_rate', minWarning: 12, maxWarning: 24, minCritical: 8, maxCritical: 30, unit: 'brpm' },
+      ];
+      for (const t of defaultThresholds) {
+        await this.prisma.alertThreshold.upsert({
+          where: { measurement: t.measurement },
+          update: t,
+          create: t,
+        });
+      }
+      list = await this.prisma.alertThreshold.findMany();
+    }
+
     this.thresholds.clear();
     for (const t of list) {
       this.thresholds.set(t.measurement, {
@@ -328,7 +346,7 @@ export class AlertEngine {
       }
     }
 
-    // Push reading to AI window buffer & request local AI anomaly score
+    // Buffer reading for on-demand AI requests (in-memory buffer only, no network call)
     if (this.aiClient && vitals.heart_rate && vitals.spo2 && vitals.temperature && vitals.respiratory_rate) {
       this.aiClient.pushReading(patientId, {
         heart_rate: vitals.heart_rate.value,
@@ -337,7 +355,9 @@ export class AlertEngine {
         respiratory_rate: vitals.respiratory_rate.value,
       });
 
-      const aiRes = await this.aiClient.getRiskScore(patientId);
+      // ONLY request AI predictive risk scores in background if explicitly enabled
+      if (this.enableBackgroundAi) {
+        const aiRes = await this.aiClient.getRiskScore(patientId);
       if (aiRes) {
         this.aiPatientScores.set(patientId, {
           riskScore: aiRes.riskScore,
@@ -395,12 +415,26 @@ export class AlertEngine {
         }
       }
     }
-
-    return affectedAlerts;
   }
+
+  return affectedAlerts;
+}
 
   public getAiPatientScore(patientId: string) {
     return this.aiPatientScores.get(patientId);
+  }
+
+  public async evaluateOnDemandAiRiskScore(patientId: string) {
+    if (!this.aiClient) return null;
+    const aiRes = await this.aiClient.getRiskScore(patientId);
+    if (aiRes) {
+      this.aiPatientScores.set(patientId, {
+        riskScore: aiRes.riskScore,
+        label: aiRes.label,
+        explanations: aiRes.explanations,
+      });
+    }
+    return aiRes;
   }
 
   private async createAlert(params: {

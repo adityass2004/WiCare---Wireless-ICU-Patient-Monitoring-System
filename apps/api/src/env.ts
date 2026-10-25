@@ -19,6 +19,7 @@ const EnvSchema = z.object({
   SIMULATOR_URL: z.string().url().default('http://127.0.0.1:4001'),
   GEMINI_API_KEY: z.string().optional(),
   GEMINI_MODEL: z.string().default('gemini-3.5-flash'),
+  ENABLE_BACKGROUND_AI: z.coerce.boolean().default(false),
 });
 
 export type Env = z.infer<typeof EnvSchema>;

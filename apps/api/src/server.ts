@@ -1,5 +1,4 @@
 import Fastify from 'fastify';
-import os from 'node:os';
 import { env } from './env.js';
 import { logger } from './logger.js';
 import type { Logger } from 'pino';
@@ -24,17 +23,11 @@ import { AiEngineClient } from './alerts/ai-client.js';
 
 import { Aedes } from 'aedes';
 import { createServer as createNetServer, type Server as NetServer } from 'node:net';
+import { detectLanIp } from '@wicare/shared';
 
 export function getLanIp(): string {
-  const interfaces = os.networkInterfaces();
-  for (const name of Object.keys(interfaces)) {
-    for (const iface of interfaces[name] || []) {
-      if (iface.family === 'IPv4' && !iface.internal) {
-        return iface.address;
-      }
-    }
-  }
-  return '127.0.0.1';
+  const result = detectLanIp();
+  return result.isLocalOnly ? '127.0.0.1' : result.primaryIp;
 }
 
 export async function ensureMqttBroker(logger: Logger, port = 1883): Promise<{ broker: Aedes | null; tcpServer: NetServer | null }> {
@@ -97,7 +90,7 @@ export async function buildServer(options: BuildServerOptions = {}) {
 
   const wsServer = new WsServer(logger);
   const aiClient = new AiEngineClient(logger);
-  const alertEngine = new AlertEngine(prisma, wsServer, aiClient);
+  const alertEngine = new AlertEngine(prisma, wsServer, aiClient, env.ENABLE_BACKGROUND_AI);
   await alertEngine.init();
 
   app.addHook('onRequest', async (request, reply) => {
@@ -133,6 +126,7 @@ export async function buildServer(options: BuildServerOptions = {}) {
     prisma,
     registry,
     explainerService,
+    allowDemoAuth: true,
   });
   await registerDropRoutes(app, {
     dropRecorder,

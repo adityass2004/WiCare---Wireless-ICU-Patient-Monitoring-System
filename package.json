@@ -11,7 +11,9 @@
     "infrastructure/*"
   ],
   "scripts": {
-    "predev": "tsc -p packages/shared/tsconfig.json && tsc -p simulator/scenarios/tsconfig.json && tsc -p simulator/network-emulator/tsconfig.json && tsc -p simulator/patient-generator/tsconfig.json",
+    "predev": "node scripts/generate-links.mjs && npm run db:seed && tsc -p packages/shared/tsconfig.json && tsc -p simulator/scenarios/tsconfig.json && tsc -p simulator/network-emulator/tsconfig.json && tsc -p simulator/patient-generator/tsconfig.json",
+    "predev:all": "node scripts/generate-links.mjs && npm run db:seed && tsc -p packages/shared/tsconfig.json && tsc -p simulator/scenarios/tsconfig.json && tsc -p simulator/network-emulator/tsconfig.json && tsc -p simulator/patient-generator/tsconfig.json",
+    "links": "node scripts/generate-links.mjs",
     "dev": "npm-run-all --parallel dev:shared dev:api dev:web",
     "dev:app": "npm-run-all --parallel dev:shared dev:api dev:web",
     "dev:all": "npm-run-all --parallel dev:shared dev:api dev:web dev:simulator",

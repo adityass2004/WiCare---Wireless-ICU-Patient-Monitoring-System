@@ -166,4 +166,40 @@ export async function registerPatientRoutes(
       readings: parsedReadings,
     };
   });
+
+  app.post<{ Params: { id: string } }>('/patients/:id/ai-score', async (request, reply) => {
+    const { id } = request.params;
+    if (!alertEngine) {
+      return reply.status(503).send({ success: false, message: 'Alert engine not initialized' });
+    }
+    const score = await alertEngine.evaluateOnDemandAiRiskScore(id);
+    if (!score) {
+      return reply.status(503).send({
+        success: false,
+        message: 'AI engine service (http://127.0.0.1:8000) is offline or insufficient vitals in window.',
+      });
+    }
+    return {
+      success: true,
+      ...score,
+    };
+  });
+
+  app.post<{ Params: { id: string } }>('/api/patients/:id/ai-score', async (request, reply) => {
+    const { id } = request.params;
+    if (!alertEngine) {
+      return reply.status(503).send({ success: false, message: 'Alert engine not initialized' });
+    }
+    const score = await alertEngine.evaluateOnDemandAiRiskScore(id);
+    if (!score) {
+      return reply.status(503).send({
+        success: false,
+        message: 'AI engine service (http://127.0.0.1:8000) is offline or insufficient vitals in window.',
+      });
+    }
+    return {
+      success: true,
+      ...score,
+    };
+  });
 }

@@ -188,9 +188,9 @@ export class GeminiExplainerService {
     // Prepare candidate models for resilient fallback if Google experiences temporary 503 spikes
     const candidateModels = Array.from(new Set([
       this.modelName,
-      'gemini-3.5-flash',
+      'gemini-3.5-flash-lite',
       'gemini-3.6-flash',
-      'gemini-3.8-flash',
+      'gemini-3.5-flash',
     ]));
 
     let rawResponseText = '';
@@ -206,6 +206,7 @@ export class GeminiExplainerService {
             config: {
               systemInstruction: SYSTEM_INSTRUCTION,
               responseMimeType: 'application/json',
+              responseSchema: STRUCTURED_RESPONSE_SCHEMA,
               temperature: 0.2,
             },
           });
@@ -246,8 +247,15 @@ export class GeminiExplainerService {
     let parsedJson: unknown;
     try {
       let cleaned = rawResponseText.trim();
-      if (cleaned.startsWith('```')) {
-        cleaned = cleaned.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '').trim();
+      const codeBlockMatch = cleaned.match(/```(?:json)?\s*([\s\S]*?)\s*```/i);
+      if (codeBlockMatch && typeof codeBlockMatch[1] === 'string') {
+        cleaned = codeBlockMatch[1].trim();
+      } else {
+        const firstBrace = cleaned.indexOf('{');
+        const lastBrace = cleaned.lastIndexOf('}');
+        if (firstBrace !== -1 && lastBrace !== -1 && lastBrace > firstBrace) {
+          cleaned = cleaned.slice(firstBrace, lastBrace + 1);
+        }
       }
       parsedJson = JSON.parse(cleaned);
     } catch {
@@ -259,14 +267,50 @@ export class GeminiExplainerService {
       );
     }
 
+    const rawObj = (typeof parsedJson === 'object' && parsedJson !== null ? parsedJson : {}) as Record<string, unknown>;
+
+    // Sanitize possibleInterpretations to adhere strictly to PossibleInterpretationSchema
+    const rawInterpretations = Array.isArray(rawObj.possibleInterpretations) ? rawObj.possibleInterpretations : [];
+    const sanitizedInterpretations = rawInterpretations.map((item) => {
+      if (typeof item !== 'object' || item === null) return item;
+      const iObj = item as Record<string, unknown>;
+      const possibility = typeof iObj.possibility === 'string' ? iObj.possibility.trim() : '';
+      const rationale = typeof iObj.rationale === 'string' ? iObj.rationale.trim() : undefined;
+      const supportingEvidence = Array.isArray(iObj.supportingEvidence)
+        ? iObj.supportingEvidence.map(String).filter((s) => s.length > 0)
+        : undefined;
+
+      let likelihood: 'low' | 'moderate' | 'high' | undefined = undefined;
+      if (typeof iObj.likelihood === 'string') {
+        const lowerL = iObj.likelihood.toLowerCase().trim();
+        if (lowerL === 'low' || lowerL === 'moderate' || lowerL === 'high') {
+          likelihood = lowerL;
+        } else if (lowerL === 'medium') {
+          likelihood = 'moderate';
+        }
+      }
+
+      return {
+        possibility,
+        ...(rationale ? { rationale } : {}),
+        ...(supportingEvidence && supportingEvidence.length > 0 ? { supportingEvidence } : {}),
+        ...(likelihood ? { likelihood } : {}),
+      };
+    });
+
     // Assemble the complete internal application contract
     const explanationCandidate = {
-      ...(typeof parsedJson === 'object' && parsedJson !== null ? parsedJson : {}),
       patientId: input.patientId,
       bedId: input.context.bedId,
       generatedAt: new Date().toISOString(),
       modelName: actualModelUsed,
-      isAdvisoryOnly: true,
+      summary: typeof rawObj.summary === 'string' ? rawObj.summary.trim() : (rawObj.summary as string),
+      observedFacts: Array.isArray(rawObj.observedFacts) ? rawObj.observedFacts.map(String) : (rawObj.observedFacts as string[]),
+      possibleInterpretations: rawObj.possibleInterpretations !== undefined ? sanitizedInterpretations : undefined,
+      supportingEvidence: Array.isArray(rawObj.supportingEvidence) ? rawObj.supportingEvidence.map(String) : (rawObj.supportingEvidence as string[]),
+      dataQualityLimitations: Array.isArray(rawObj.dataQualityLimitations) ? rawObj.dataQualityLimitations.map(String) : (rawObj.dataQualityLimitations as string[]),
+      suggestedVerificationSteps: Array.isArray(rawObj.suggestedVerificationSteps) ? rawObj.suggestedVerificationSteps.map(String) : (rawObj.suggestedVerificationSteps as string[]),
+      isAdvisoryOnly: true as const,
     };
 
     // Strict schema contract verification
@@ -395,6 +439,15 @@ Remember:
         'Gemini API rate limit exceeded. Please retry in a few moments.',
         'RATE_LIMITED',
         429,
+      );
+    }
+
+    if (lower.includes('503') || lower.includes('high demand') || lower.includes('unavailable')) {
+      this.logger?.warn({ code: 'UNAVAILABLE' }, 'Gemini API high demand / temporary service spike');
+      throw new GeminiExplainerError(
+        'Gemini model is currently experiencing high demand. Please try again in a few moments.',
+        'PROVIDER_ERROR',
+        503,
       );
     }
 
