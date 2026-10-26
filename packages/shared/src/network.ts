@@ -52,12 +52,23 @@ export function detectLanIp(
 
   if (!interfaces && typeof process !== 'undefined' && typeof process.versions?.node !== 'undefined') {
     try {
-      // Safe dynamic require so client-side bundlers (Next.js/webpack) never encounter node:os
-      const nodeRequire = eval('require');
-      const os = nodeRequire('os');
-      interfaces = os.networkInterfaces() as Record<string, NetworkInterfaceLike[]>;
+      if (typeof (process as any).getBuiltinModule === 'function') {
+        const os = (process as any).getBuiltinModule('os');
+        interfaces = os?.networkInterfaces?.() as Record<string, NetworkInterfaceLike[]>;
+      }
     } catch {
-      // Browser or non-Node environment fallback
+      // ignore
+    }
+
+    if (!interfaces) {
+      try {
+        // Safe dynamic require so client-side bundlers (Next.js/webpack) never encounter node:os
+        const nodeRequire = typeof require === 'function' ? require : eval('require');
+        const os = nodeRequire('os');
+        interfaces = os.networkInterfaces() as Record<string, NetworkInterfaceLike[]>;
+      } catch {
+        // Browser or non-Node environment fallback
+      }
     }
   }
 

@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { detectLanIp, generateAccessLinksMarkdown } from '../packages/shared/dist/index.js';
 
@@ -46,7 +47,7 @@ const ports = {
 };
 
 export function runGenerateLinks() {
-  const lanResult = detectLanIp();
+  const lanResult = detectLanIp(os.networkInterfaces());
   const md = generateAccessLinksMarkdown(lanResult, ports);
 
   const outputPath = path.join(rootDir, 'links.md');
